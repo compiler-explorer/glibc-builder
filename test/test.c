@@ -97,7 +97,9 @@ int main(void) {
     printf("iconv=%s\n", iconv_ok ? "ok" : "FAILED");
     ok &= iconv_ok;
 
-    const char *loc = setlocale(LC_ALL, "C.UTF-8");
+    /* $NO_C_UTF8: this glibc ships no C.UTF-8 (< 2.36); check another UTF-8 locale instead */
+    const char *utf8_locale = getenv("NO_C_UTF8") && *getenv("NO_C_UTF8") ? "en_US.UTF-8" : "C.UTF-8";
+    const char *loc = setlocale(LC_ALL, utf8_locale);
     int loc_ok = loc && strcmp(nl_langinfo(CODESET), "UTF-8") == 0;
     printf("locale=%s codeset=%s\n", loc ? loc : "(null)", nl_langinfo(CODESET));
     ok &= loc_ok;

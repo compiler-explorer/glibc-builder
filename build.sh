@@ -32,14 +32,12 @@ LOCALES_FILE=${HERE}/locales.txt
 # They are bundled into the tarball so the include dir is self-contained.
 if [[ "${TRIPLE}" == "${BUILD_TRIPLE}" ]]; then
     CC=gcc
-    CXX=g++
     STRIP=strip
     KERNEL_HEADERS_PKG=linux-libc-dev
     KERNEL_HEADERS_ROOT=/usr/include
     KERNEL_ASM_DIR=/usr/include/${TRIPLE}/asm
 else
     CC=${TRIPLE}-gcc
-    CXX=${TRIPLE}-g++
     STRIP=${TRIPLE}-strip
     case "${TRIPLE}" in
         aarch64-linux-gnu) DEB_ARCH=arm64 ;;
@@ -102,9 +100,20 @@ gather_kernel_headers() {
 
 gather_kernel_headers "${KERNEL_HEADERS_PKG}" "${KERNEL_HEADERS_ROOT}" "${KERNEL_ASM_DIR}" "${TRIPLE}" "${HEADERS_DIR}"
 
-# configure_and_make <triple> <cc> <cxx> <kernel headers> <build dir> <prefix>
+# Older glibc needs workarounds for Ubuntu 24.04's gcc defaults.
+version_older_than() {
+    [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]
+}
+EXTRA_CFLAGS=
+if version_older_than "${VERSION}" 2.31; then
+    # Ubuntu's gcc enables -fcf-protection by default, which makes glibc < 2.31 reference CET
+    # functions it doesn't build (undefined _dl_cet_open_check when linking ld.so).
+    EXTRA_CFLAGS=-fcf-protection=none
+fi
+
+# configure_and_make <triple> <cc> <kernel headers> <build dir> <prefix>
 configure_and_make() {
-    local triple="$1" cc="$2" cxx="$3" headers="$4" build_dir="$5" prefix="$6"
+    local triple="$1" cc="$2" headers="$3" build_dir="$4" prefix="$5"
     mkdir -p "${build_dir}"
     # zonedir: glibc doesn't ship tzdata, so look up zones in the host's tzdata rather than
     # under the prefix.
@@ -120,21 +129,29 @@ EOF
     # -U_FORTIFY_SOURCE: Ubuntu's gcc defines _FORTIFY_SOURCE=3 unless the command line has a
     # plain -U/-D_FORTIFY_SOURCE. glibc < 2.41 only passes -Wp,-U_FORTIFY_SOURCE, which the
     # driver doesn't see, and then fails to build misc/syslog.c.
+    # -U_TIME_BITS -U_FILE_OFFSET_BITS: likewise, Ubuntu's 32-bit gcc (armhf) defaults to 64-bit
+    # time_t/off_t, which glibc < 2.41 can't build with (conflicting types for fgetpos).
+    # CXX=false: glibc only uses C++ for its tests (support/links-dso-program etc.), and linking
+    # those against the build host's libstdc++ fails when that was built for a newer glibc. (An
+    # empty CXX doesn't work: AC_PROG_CXX then finds g++ itself. With false, configure's "can
+    # $CXX link programs" check fails and glibc builds without C++.)
+    # --without-gd: don't build memusagestat against whatever libgd the build host has.
     "${SRC_DIR}/configure" \
-        CC="${cc} -U_FORTIFY_SOURCE" \
-        CXX="${cxx} -U_FORTIFY_SOURCE" \
+        CC="${cc} -U_FORTIFY_SOURCE -U_TIME_BITS -U_FILE_OFFSET_BITS ${EXTRA_CFLAGS}" \
+        CXX=false \
         --prefix="${prefix}" \
         --build="${BUILD_TRIPLE}" \
         --host="${triple}" \
         --with-headers="${headers}" \
         --disable-werror \
         --without-selinux \
+        --without-gd \
         --enable-stack-protector=strong
     make "-j$(nproc)"
     popd
 }
 
-configure_and_make "${TRIPLE}" "${CC}" "${CXX}" "${HEADERS_DIR}" "${BUILD_DIR}" "${PREFIX}"
+configure_and_make "${TRIPLE}" "${CC}" "${HEADERS_DIR}" "${BUILD_DIR}" "${PREFIX}"
 make -C "${BUILD_DIR}" install DESTDIR="${STAGING_DIR}"
 
 # Locales are compiled with the localedef of a native build of the same glibc version (the
@@ -143,7 +160,7 @@ make -C "${BUILD_DIR}" install DESTDIR="${STAGING_DIR}"
 # installed. Compiled locales only depend on the target's endianness.
 if [[ "${TRIPLE}" != "${BUILD_TRIPLE}" ]]; then
     gather_kernel_headers linux-libc-dev /usr/include "/usr/include/${BUILD_TRIPLE}/asm" "${BUILD_TRIPLE}" "${NATIVE_HEADERS_DIR}"
-    configure_and_make "${BUILD_TRIPLE}" gcc g++ "${NATIVE_HEADERS_DIR}" "${NATIVE_BUILD_DIR}" "${NATIVE_PREFIX}"
+    configure_and_make "${BUILD_TRIPLE}" gcc "${NATIVE_HEADERS_DIR}" "${NATIVE_BUILD_DIR}" "${NATIVE_PREFIX}"
 fi
 if echo | "${CC}" -dM -E - | grep -q '__BYTE_ORDER__ __ORDER_BIG_ENDIAN__'; then
     ENDIAN=--big-endian
@@ -159,9 +176,19 @@ fi
 # (non-zero exit) fails the build. localedef writes to <its own prefix>/lib/locale under
 # --prefix, and doesn't create that directory itself.
 mkdir -p "${LOCALES_STAGING_DIR}${NATIVE_PREFIX}/lib/locale"
+# --no-hard-links needs glibc >= 2.29; without it identical files are hard links, which is fine.
+LOCALEDEF_FLAGS=(--no-archive "${ENDIAN}" --alias-file="${SRC_DIR}/intl/locale.alias")
+if "${LOCALEDEF[@]}" --help | grep -q -- --no-hard-links; then
+    LOCALEDEF_FLAGS+=(--no-hard-links)
+fi
 grep -v -e '^#' -e '^$' "${LOCALES_FILE}" | while read -r NAME CHARSET; do
     INPUT=$(echo "${NAME}" | sed 's/\([^.]*\)[^@]*\(.*\)/\1\2/')
-    FLAGS=(--no-archive --no-hard-links "${ENDIAN}" --alias-file="${SRC_DIR}/intl/locale.alias")
+    if [[ "${NAME}" == C.UTF-8 ]] && version_older_than "${VERSION}" 2.36; then
+        # Added in 2.35, but 2.35's own localedef rejects it (empty mon_decimal_point)
+        echo "glibc ${VERSION} has no usable C.UTF-8 locale source; skipping it"
+        continue
+    fi
+    FLAGS=("${LOCALEDEF_FLAGS[@]}")
     if [[ "${CHARSET}" == SHIFT_JIS* ]]; then
         # Not ASCII compatible; glibc's own locale install disables this warning too.
         FLAGS+=(--no-warnings=ascii)

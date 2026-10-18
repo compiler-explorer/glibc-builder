@@ -66,14 +66,23 @@ included, build on the x64 runner, so the arm64 variant of the workflow isn't ne
   into `<prefix>/include`, so the include dir is self-contained.
 - The source tarball's GPG signature is checked against `glibc-keyring.gpg`, which holds the
   glibc release managers' keys exported from `https://ftp.gnu.org/gnu/gnu-keyring.gpg`
-  (Carlos O'Donell signed 2.39/2.40, Andreas K. Huettel 2.41/2.42). A release signed by someone
-  else fails the build until their key is added.
+  (Carlos O'Donell signed 2.28/2.30/2.32-2.40, Siddhesh Poyarekar 2.29/2.31, Andreas K. Huettel
+  2.41/2.42). A release signed by someone else fails the build until their key is added.
+- Ubuntu 24.04's gcc defaults need overriding for older glibc: `-U_FORTIFY_SOURCE` (< 2.41,
+  syslog.c), `-U_TIME_BITS -U_FILE_OFFSET_BITS` (32-bit armhf < 2.41) and `-fcf-protection=none`
+  (< 2.31). glibc is configured with `CXX=false` and `--without-gd`, so nothing links against the
+  build host's libstdc++/libgd (which fails when those were built for a newer glibc).
+- Versions built and tested so far: 2.39-2.42 for all six triples (CI), plus x86_64 2.28, 2.31,
+  2.35 and 2.36 (locally). 2.17 can't be built with this image (configure rejects gcc 13 and
+  make 4.x). CE's gcc >= 12 runtimes need glibc 2.35, so with those compilers older versions are
+  only usable for dynamically linked C.
 - The locales in `locales.txt` (`/etc/locale.gen` format, the same list as infra's
   setup-common.sh plus C.UTF-8, which isn't built in to glibc) are compiled into
   `<prefix>/lib/locale`. They're compiled with the localedef of a native build of the same glibc
   version, because the compiled format isn't guaranteed stable across versions. A cross build
   therefore also builds glibc natively. Compiled locales only depend on endianness, so they get
   `--little-endian` or `--big-endian` to match the target. Any localedef warning fails the build.
+  C.UTF-8 is skipped before 2.36 (no source before 2.35; 2.35's localedef rejects its own).
   `ja_JP.SHIFT_JIS` needs `--no-warnings=ascii`, as in glibc's own locale install.
 - Everything is stripped with `--strip-debug` (not `--strip-all`, so gdb and valgrind still get
   ld.so's symbol table). Static libs are kept.

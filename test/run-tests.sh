@@ -13,8 +13,13 @@ GCC_DIR="$3"
 CLANG_DIR="${4-}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=$(mktemp -d)
-# All locales from locales.txt, by name
+# All locales from locales.txt, by name. glibc < 2.36 has no C.UTF-8, which the builder skips.
 TEST_LOCALES=$(grep -v -e '^#' -e '^$' "${HERE}/../locales.txt" | cut -d' ' -f1 | tr '\n' ' ')
+export NO_C_UTF8=
+if [[ ! -d "${PREFIX}/lib/locale/C.utf8" ]]; then
+    TEST_LOCALES=${TEST_LOCALES/C.UTF-8 /}
+    NO_C_UTF8=1
+fi
 FAILURES=0
 
 LINK_FLAGS=(-L"${PREFIX}/lib" -Wl,-rpath="${PREFIX}/lib"
