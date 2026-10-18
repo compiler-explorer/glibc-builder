@@ -77,7 +77,7 @@ included, build on the x64 runner, so the arm64 variant of the workflow isn't ne
   is patched to accept make 4.
 - Ubuntu 24.04's gcc defaults need overriding for older glibc: `-U_FORTIFY_SOURCE` (< 2.41,
   syslog.c), `-U_TIME_BITS -U_FILE_OFFSET_BITS` (32-bit armhf < 2.41) and `-fcf-protection=none`
-  (< 2.31), `-no-pie -fno-PIE` (< 2.28). glibc is configured with `CXX=false` and `--without-gd`, so nothing links against the
+  (< 2.31), `-no-pie -fno-PIE` (< 2.28). glibc is configured with `CXX=false`, `--without-gd` and `MAKEINFO=:` (no info manual), so nothing links against the
   build host's libstdc++/libgd (which fails when those were built for a newer glibc).
 - Versions built and tested: 2.39-2.42 for all six triples, and x86_64 2.17, 2.28, 2.31, 2.35,
   2.36. CE's gcc >= 12 runtimes need glibc 2.35 (libgcc_s GLIBC_2.35, libstdc++ GLIBC_2.34,

@@ -160,9 +160,12 @@ EOF
     # empty CXX doesn't work: AC_PROG_CXX then finds g++ itself. With false, configure's "can
     # $CXX link programs" check fails and glibc builds without C++.)
     # --without-gd: don't build memusagestat against whatever libgd the build host has.
+    # MAKEINFO=: don't build the info manual (not needed; texinfo 7's makeinfo crashes on
+    # 2.17's, and hosts without makeinfo skip it anyway).
     "${SRC_DIR}/configure" \
         CC="${cc} -U_FORTIFY_SOURCE -U_TIME_BITS -U_FILE_OFFSET_BITS ${EXTRA_CFLAGS}" \
         CXX=false \
+        MAKEINFO=: \
         --prefix="${prefix}" \
         --build="${BUILD_TRIPLE}" \
         --host="${triple}" \

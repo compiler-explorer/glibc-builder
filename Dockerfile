@@ -17,7 +17,6 @@ RUN apt-get update -y -q && apt-get upgrade -y -q && \
     gpgv \
     make \
     python3 \
-    texinfo \
     xz-utils \
     linux-libc-dev \
     gcc-9 \
