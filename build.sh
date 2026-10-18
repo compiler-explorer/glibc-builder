@@ -207,7 +207,9 @@ fi
 # (non-zero exit) fails the build. localedef writes to <its own prefix>/lib/locale under
 # --prefix, and doesn't create that directory itself.
 mkdir -p "${LOCALES_STAGING_DIR}${NATIVE_PREFIX}/lib/locale"
-# --no-hard-links needs glibc >= 2.29; without it identical files are hard links, which is fine.
+# --no-hard-links needs glibc >= 2.29. Older localedef hard-links identical files between locales,
+# but the cp -r into the install tree below copies them as separate files, so every version ends
+# up without hard links (squashfs dedupes identical files anyway).
 LOCALEDEF_FLAGS=(--no-archive ${ENDIAN} --alias-file="${SRC_DIR}/intl/locale.alias")
 if "${LOCALEDEF[@]}" --help | grep -q -- --no-hard-links; then
     LOCALEDEF_FLAGS+=(--no-hard-links)
