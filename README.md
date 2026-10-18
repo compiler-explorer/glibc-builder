@@ -68,14 +68,23 @@ included, build on the x64 runner, so the arm64 variant of the workflow isn't ne
   glibc release managers' keys exported from `https://ftp.gnu.org/gnu/gnu-keyring.gpg`
   (Carlos O'Donell signed 2.28/2.30/2.32-2.40, Siddhesh Poyarekar 2.29/2.31, Andreas K. Huettel
   2.41/2.42). A release signed by someone else fails the build until their key is added.
+- build.sh picks the gcc per glibc version (`GCC_MAJOR`): Ubuntu's `gcc-9` for glibc < 2.28
+  (2.17's configure only accepts gcc 4.3-9.x), `gcc-13` otherwise. Newer glibc needing a newer gcc
+  means adding a branch there and the package to the Dockerfile (Ubuntu 24.04 has gcc 9-14,
+  native and cross). Only native gcc-9 is installed, so old versions are x86_64 only for now.
+- `patches/<version>/*.patch` are applied to that version's source. 2.17 needs one
+  (`_obstack_compat` as a common symbol, which binutils >= 2.26 won't version), and its configure
+  is patched to accept make 4.
 - Ubuntu 24.04's gcc defaults need overriding for older glibc: `-U_FORTIFY_SOURCE` (< 2.41,
   syslog.c), `-U_TIME_BITS -U_FILE_OFFSET_BITS` (32-bit armhf < 2.41) and `-fcf-protection=none`
-  (< 2.31). glibc is configured with `CXX=false` and `--without-gd`, so nothing links against the
+  (< 2.31), `-no-pie -fno-PIE` (< 2.28). glibc is configured with `CXX=false` and `--without-gd`, so nothing links against the
   build host's libstdc++/libgd (which fails when those were built for a newer glibc).
-- Versions built and tested so far: 2.39-2.42 for all six triples (CI), plus x86_64 2.28, 2.31,
-  2.35 and 2.36 (locally). 2.17 can't be built with this image (configure rejects gcc 13 and
-  make 4.x). CE's gcc >= 12 runtimes need glibc 2.35, so with those compilers older versions are
-  only usable for dynamically linked C.
+- Versions built and tested: 2.39-2.42 for all six triples, and x86_64 2.17, 2.28, 2.31, 2.35,
+  2.36. CE's gcc >= 12 runtimes need glibc 2.35 (libgcc_s GLIBC_2.35, libstdc++ GLIBC_2.34,
+  libgcc_eh `_dl_find_object`), so with those compilers glibc < 2.35 is only usable for
+  dynamically linked C; with gcc <= 11 C works fully and C++ needs `-pthread` (< 2.34).
+- Older localedef lacks some options (`--no-hard-links` < 2.29, `--no-warnings`, endianness
+  < 2.21); they're only passed when supported.
 - The locales in `locales.txt` (`/etc/locale.gen` format, the same list as infra's
   setup-common.sh plus C.UTF-8, which isn't built in to glibc) are compiled into
   `<prefix>/lib/locale`. They're compiled with the localedef of a native build of the same glibc

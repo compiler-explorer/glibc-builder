@@ -1,0 +1,15 @@
+Initialise _obstack_compat so it isn't a common symbol: binutils >= 2.26 refuse to version
+a common symbol ("can't be versioned to common symbol '_obstack_compat'"). Backport of the
+fix in later glibc.
+
+--- a/malloc/obstack.c	2012-12-25 04:02:13.000000000 +0100
++++ b/malloc/obstack.c	2026-10-18 19:11:09.355069420 +0200
+@@ -116,7 +116,7 @@
+ /* A looong time ago (before 1994, anyway; we're not sure) this global variable
+    was used by non-GNU-C macros to avoid multiple evaluation.  The GNU C
+    library still exports it because somebody might use it.  */
+-struct obstack *_obstack_compat;
++struct obstack *_obstack_compat = 0;
+ compat_symbol (libc, _obstack_compat, _obstack, GLIBC_2_0);
+ #  endif
+ # endif

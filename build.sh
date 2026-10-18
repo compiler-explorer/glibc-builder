@@ -24,20 +24,34 @@ if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ || -z "${TRIPLE}" || "${TRIP
     exit 1
 fi
 
+version_older_than() {
+    [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]
+}
+
+# The gcc that can build this glibc version: Ubuntu's gcc-<major> (native) or
+# <triple>-gcc-<major> (cross), which the Dockerfile installs. Old glibc doesn't build with new
+# gcc (2.17's configure only accepts gcc 4.3-9.x), and future glibc may need a newer one.
+if version_older_than "${VERSION}" 2.28; then
+    GCC_MAJOR=9
+else
+    GCC_MAJOR=13
+fi
+
 BUILD_TRIPLE=$(gcc -dumpmachine)
+NATIVE_CC=gcc-${GCC_MAJOR}
 PREFIX=/opt/compiler-explorer/glibc/${VERSION}/${TRIPLE}
 LOCALES_FILE=${HERE}/locales.txt
 
 # Kernel headers come from Ubuntu's linux-libc-dev (native) or linux-libc-dev-<arch>-cross.
 # They are bundled into the tarball so the include dir is self-contained.
 if [[ "${TRIPLE}" == "${BUILD_TRIPLE}" ]]; then
-    CC=gcc
+    CC=${NATIVE_CC}
     STRIP=strip
     KERNEL_HEADERS_PKG=linux-libc-dev
     KERNEL_HEADERS_ROOT=/usr/include
     KERNEL_ASM_DIR=/usr/include/${TRIPLE}/asm
 else
-    CC=${TRIPLE}-gcc
+    CC=${TRIPLE}-gcc-${GCC_MAJOR}
     STRIP=${TRIPLE}-strip
     case "${TRIPLE}" in
         aarch64-linux-gnu) DEB_ARCH=arm64 ;;
@@ -81,6 +95,14 @@ curl -sSfL -o "${SOURCE_TARBALL}" "https://ftp.gnu.org/gnu/glibc/glibc-${VERSION
 curl -sSfL -o "${SOURCE_TARBALL}.sig" "https://ftp.gnu.org/gnu/glibc/glibc-${VERSION}.tar.xz.sig"
 gpgv --keyring "${HERE}/glibc-keyring.gpg" "${SOURCE_TARBALL}.sig" "${SOURCE_TARBALL}"
 tar Jxf "${SOURCE_TARBALL}" --strip-components 1 -C "${SRC_DIR}"
+# Fixes for building old releases with today's toolchain, from patches/<version>/
+if [[ -d "${HERE}/patches/${VERSION}" ]]; then
+    for patch in "${HERE}/patches/${VERSION}"/*.patch; do
+        patch -p1 -d "${SRC_DIR}" < "${patch}"
+    done
+fi
+# glibc < 2.18's configure only accepts make 3.79-3.8x; later releases also accept make 4.
+sed -i 's/^\( *\)3\.79\* | 3\.\[89\]\*)/\13.79* | 3.[89]* | [4-9].*)/' "${SRC_DIR}/configure"
 
 # gather_kernel_headers <package> <include root> <asm dir> <triple> <dest>
 # Gathers a package's kernel headers into one tree (linux/, asm/, asm-generic/, ...), as
@@ -101,14 +123,16 @@ gather_kernel_headers() {
 gather_kernel_headers "${KERNEL_HEADERS_PKG}" "${KERNEL_HEADERS_ROOT}" "${KERNEL_ASM_DIR}" "${TRIPLE}" "${HEADERS_DIR}"
 
 # Older glibc needs workarounds for Ubuntu 24.04's gcc defaults.
-version_older_than() {
-    [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]
-}
 EXTRA_CFLAGS=
 if version_older_than "${VERSION}" 2.31; then
     # Ubuntu's gcc enables -fcf-protection by default, which makes glibc < 2.31 reference CET
     # functions it doesn't build (undefined _dl_cet_open_check when linking ld.so).
     EXTRA_CFLAGS=-fcf-protection=none
+fi
+if version_older_than "${VERSION}" 2.28; then
+    # Ubuntu's gcc builds PIE by default; old glibc's crt1.o isn't PIC (R_X86_64_32S against
+    # __libc_csu_fini when linking its programs).
+    EXTRA_CFLAGS="${EXTRA_CFLAGS} -no-pie -fno-PIE"
 fi
 
 # configure_and_make <triple> <cc> <kernel headers> <build dir> <prefix>
@@ -160,7 +184,7 @@ make -C "${BUILD_DIR}" install DESTDIR="${STAGING_DIR}"
 # installed. Compiled locales only depend on the target's endianness.
 if [[ "${TRIPLE}" != "${BUILD_TRIPLE}" ]]; then
     gather_kernel_headers linux-libc-dev /usr/include "/usr/include/${BUILD_TRIPLE}/asm" "${BUILD_TRIPLE}" "${NATIVE_HEADERS_DIR}"
-    configure_and_make "${BUILD_TRIPLE}" gcc "${NATIVE_HEADERS_DIR}" "${NATIVE_BUILD_DIR}" "${NATIVE_PREFIX}"
+    configure_and_make "${BUILD_TRIPLE}" "${NATIVE_CC}" "${NATIVE_HEADERS_DIR}" "${NATIVE_BUILD_DIR}" "${NATIVE_PREFIX}"
 fi
 if echo | "${CC}" -dM -E - | grep -q '__BYTE_ORDER__ __ORDER_BIG_ENDIAN__'; then
     ENDIAN=--big-endian
@@ -169,15 +193,19 @@ else
 fi
 LOCALEDEF=("${NATIVE_BUILD_DIR}/testrun.sh" "${NATIVE_BUILD_DIR}/locale/localedef")
 if ! "${LOCALEDEF[@]}" --help | grep -q -- "${ENDIAN}"; then
-    echo "localedef for glibc ${VERSION} doesn't support ${ENDIAN}"
-    exit 1
+    # localedef < 2.21 has no endianness options and writes the host's (little-endian) format
+    if [[ "${ENDIAN}" != --little-endian ]]; then
+        echo "localedef for glibc ${VERSION} can't write ${ENDIAN} locales"
+        exit 1
+    fi
+    ENDIAN=
 fi
 # Mirrors build-one-locale in glibc's localedata/Makefile. Any localedef warning or error
 # (non-zero exit) fails the build. localedef writes to <its own prefix>/lib/locale under
 # --prefix, and doesn't create that directory itself.
 mkdir -p "${LOCALES_STAGING_DIR}${NATIVE_PREFIX}/lib/locale"
 # --no-hard-links needs glibc >= 2.29; without it identical files are hard links, which is fine.
-LOCALEDEF_FLAGS=(--no-archive "${ENDIAN}" --alias-file="${SRC_DIR}/intl/locale.alias")
+LOCALEDEF_FLAGS=(--no-archive ${ENDIAN} --alias-file="${SRC_DIR}/intl/locale.alias")
 if "${LOCALEDEF[@]}" --help | grep -q -- --no-hard-links; then
     LOCALEDEF_FLAGS+=(--no-hard-links)
 fi
@@ -189,8 +217,9 @@ grep -v -e '^#' -e '^$' "${LOCALES_FILE}" | while read -r NAME CHARSET; do
         continue
     fi
     FLAGS=("${LOCALEDEF_FLAGS[@]}")
-    if [[ "${CHARSET}" == SHIFT_JIS* ]]; then
-        # Not ASCII compatible; glibc's own locale install disables this warning too.
+    if [[ "${CHARSET}" == SHIFT_JIS* ]] && "${LOCALEDEF[@]}" --help | grep -q -- --no-warnings; then
+        # Not ASCII compatible; glibc's own locale install disables this warning too. (Older
+        # localedef has no --no-warnings, and only prints a notice for it.)
         FLAGS+=(--no-warnings=ascii)
     fi
     (cd "${SRC_DIR}/localedata" && I18NPATH=. "${LOCALEDEF[@]}" "${FLAGS[@]}" \
@@ -224,6 +253,8 @@ ln -s . "${INSTALL_DIR}/usr"
 # ones first. (Passing all of include/ that way would also bypass libstdc++'s math.h/stdlib.h
 # wrappers.)
 for header in pthread.h bits/floatn.h bits/floatn-common.h bits/statx.h; do
+    # Older glibc doesn't have all of them
+    [[ -f "${INSTALL_DIR}/include/${header}" ]] || continue
     mkdir -p "$(dirname "${INSTALL_DIR}/include-overrides/${header}")"
     ln -sr "${INSTALL_DIR}/include/${header}" "${INSTALL_DIR}/include-overrides/${header}"
 done
