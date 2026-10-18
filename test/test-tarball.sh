@@ -25,6 +25,9 @@ mkdir -p "${OVERLAY}/upper" "${OVERLAY}/work"
 
 unshare --map-root-user --mount bash -euo pipefail -c '
     mount -t overlay overlay -o "lowerdir=/opt/compiler-explorer,upperdir=$1/upper,workdir=$1/work" /opt/compiler-explorer
+    # A private tmpfs hides any glibc installed on the host (e.g. symlinks into read-only /cefs images)
+    mkdir -p /opt/compiler-explorer/glibc
+    mount -t tmpfs tmpfs /opt/compiler-explorer/glibc
     mkdir -p "$3"
     tar Jxf "$2" --no-same-owner --strip-components 2 -C "$3"
     "$4/run-tests.sh" "$3" "$5" "$6" "$7"

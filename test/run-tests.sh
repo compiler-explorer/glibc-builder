@@ -23,10 +23,11 @@ LINK_FLAGS=(-L"${PREFIX}/lib" -Wl,-rpath="${PREFIX}/lib"
 # #include_next finds these headers; include-overrides beats gcc's include-fixed copies.
 GCC_FLAGS=(-isystem "${PREFIX}/include-overrides" -isysroot "${PREFIX}" -B"${PREFIX}/lib" "${LINK_FLAGS[@]}")
 # clang ignores -isysroot on Linux. --sysroot moves both headers and crt files to the prefix;
-# -Wl,--sysroot=/ stops ld prefixing the absolute paths in libc.so/libm.so linker scripts, and
 # libstdc++ has to be found explicitly because clang no longer looks outside the sysroot.
-CLANG_FLAGS=(--gcc-toolchain="${GCC_DIR}" --sysroot="${PREFIX}" -Wl,--sysroot=/ -L"${GCC_DIR}/lib64"
-    "${LINK_FLAGS[@]}")
+CLANG_FLAGS=(--gcc-toolchain="${GCC_DIR}" --sysroot="${PREFIX}" -L"${GCC_DIR}/lib64" "${LINK_FLAGS[@]}")
+# gcc with a full --sysroot, as CE PR #8719 does. The linker scripts use bare names, so ld finds
+# the libraries through -L/<sysroot>/lib rather than prefixing the sysroot to absolute paths.
+GCC_SYSROOT_FLAGS=(--sysroot="${PREFIX}" -isystem "${PREFIX}/include-overrides" "${LINK_FLAGS[@]}")
 # libstdc++/libgcc_s come from the compiler, as CE already does
 GCC_RPATH=(-Wl,-rpath="${GCC_DIR}/lib64")
 
@@ -105,6 +106,7 @@ test_compiler() {
 }
 
 test_compiler gcc "${GCC_DIR}/bin/gcc" "${GCC_DIR}/bin/g++" "${GCC_FLAGS[@]}"
+test_compiler gcc-sysroot "${GCC_DIR}/bin/gcc" "${GCC_DIR}/bin/g++" "${GCC_SYSROOT_FLAGS[@]}"
 if [[ -n "${CLANG_DIR}" ]]; then
     test_compiler clang "${CLANG_DIR}/bin/clang" "${CLANG_DIR}/bin/clang++" "${CLANG_FLAGS[@]}"
 fi

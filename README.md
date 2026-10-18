@@ -84,39 +84,50 @@ included, build on the x64 runner, so the arm64 variant of the workflow isn't ne
 
 With `P=/opt/compiler-explorer/glibc/2.42/x86_64-linux-gnu`:
 
-gcc:
+gcc, either of:
 
 ```
--isystem $P/include-overrides -isysroot $P -B$P/lib -L$P/lib -Wl,-rpath=$P/lib -Wl,--dynamic-linker=$P/lib/ld-linux-x86-64.so.2
+--sysroot=$P -isystem $P/include-overrides -L$P/lib -Wl,-rpath=$P/lib -Wl,--dynamic-linker=$P/lib/ld-linux-x86-64.so.2
+-isysroot $P -isystem $P/include-overrides -B$P/lib -L$P/lib -Wl,-rpath=$P/lib -Wl,--dynamic-linker=$P/lib/ld-linux-x86-64.so.2
 ```
 
 clang:
 
 ```
---sysroot=$P -Wl,--sysroot=/ -L<gcc>/lib64 -L$P/lib -Wl,-rpath=$P/lib -Wl,--dynamic-linker=$P/lib/ld-linux-x86-64.so.2
+--sysroot=$P -L<gcc>/lib64 -L$P/lib -Wl,-rpath=$P/lib -Wl,--dynamic-linker=$P/lib/ld-linux-x86-64.so.2
 ```
 
-Why the gcc header flags: libstdc++'s `<cstdlib>`/`<cmath>` do `#include_next <stdlib.h>`,
-which skips `-I`/`-isystem` dirs and lands in `/usr/include` (the host's older glibc) unless the
-system include dir is replaced. `-isysroot` does that. But gcc's `include-fixed` dir comes
-before the sysroot and has fixincluded copies of `pthread.h`, `bits/floatn*.h` and
-`bits/statx.h` taken from the glibc gcc was built against (in every CE x86 gcc, e.g. with an old
-`PTHREAD_COND_INITIALIZER`). `include-overrides` holds symlinks to just those, so they win.
-Adding the whole `$P/include` with `-I` doesn't work: gcc drops it as a duplicate of the
-sysroot dir, and it would also bypass libstdc++'s `math.h`/`stdlib.h` wrappers.
+plus CE's usual `-Wl,-rpath=<gcc>/lib64` for libstdc++/libgcc_s.
+
+Why a sysroot: libstdc++'s `<cstdlib>`/`<cmath>` do `#include_next <stdlib.h>`, which skips
+`-I`/`-isystem` dirs and lands in `/usr/include` (the host's older glibc) unless the system
+include dir is replaced. `--sysroot` (or gcc's header-only `-isysroot`; clang ignores
+`-isysroot` on Linux) does that, via the `<prefix>/usr -> .` symlink.
+
+Why `include-overrides` (gcc only): gcc's `include-fixed` dir is searched before the sysroot
+and has fixincluded copies of `pthread.h`, `bits/floatn*.h` and `bits/statx.h` taken from the
+glibc gcc was built against (every CE x86 gcc has some of these; e.g. its `pthread.h` has the
+old `PTHREAD_COND_INITIALIZER` for the previous `pthread_cond_t` layout). `include-overrides`
+holds symlinks to just those headers, and `-isystem` puts them first. clang doesn't use gcc's
+`include-fixed`, so it doesn't need it (harmless if passed). Adding the whole `$P/include` with
+`-I`/`-isystem` doesn't work: gcc drops it as a duplicate of the sysroot dir, and it would also
+bypass libstdc++'s `math.h`/`stdlib.h` wrappers.
+
+The linker scripts (`lib/libc.so`, `lib/libm.so`, `lib/libm.a`) name their libraries without a
+path, so ld finds them through `-L$P/lib` or `<sysroot>/lib`. With absolute paths ld would
+prefix the sysroot to them under `--sysroot` and fail; with sysroot-relative `/lib/...` paths a
+link without `--sysroot` would silently use the host's libc.
 
 The sysroot flags hide the host's `/usr/include`, so third-party headers that live there (e.g.
-`zlib.h`) need `-idirafter /usr/include`.
-
-clang ignores `-isysroot` on Linux, so it needs `--sysroot`. `-Wl,--sysroot=/` stops ld adding
-the sysroot to the absolute paths in the `libc.so`/`libm.so` linker scripts. `-L<gcc>/lib64` is
-needed because with a sysroot clang no longer finds libstdc++ on its own.
+`zlib.h`) need `-idirafter /usr/include`. With `--sysroot`, clang also stops looking for
+libstdc++ outside the sysroot, hence `-L<gcc>/lib64`.
 
 ## Testing
 
 `test/test-tarball.sh <tarball> [gcc dir] [clang dir]` extracts the tarball to its real prefix
 inside a private user+mount namespace (an overlay over `/opt/compiler-explorer`, so nothing is
-written to the host). It then builds and runs C/C++ tests, dynamic and static, with gcc and
+written to the host, and a private tmpfs hides any glibc already installed there). It then
+builds and runs C/C++ tests, dynamic and static, with gcc (`-isysroot` and `--sysroot`) and
 optionally clang.
 
 It runs on a host with CE's compilers installed (it needs unprivileged user namespaces and the

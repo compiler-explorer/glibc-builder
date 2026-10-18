@@ -67,12 +67,13 @@ BUILD_DIR=${ROOT}/build-${TRIPLE}
 NATIVE_BUILD_DIR=${ROOT}/build-${BUILD_TRIPLE}
 NATIVE_PREFIX=/opt/compiler-explorer/glibc/${VERSION}/${BUILD_TRIPLE}
 HEADERS_DIR=${ROOT}/kernel-headers-${TRIPLE}
+NATIVE_HEADERS_DIR=${ROOT}/kernel-headers-${BUILD_TRIPLE}
 STAGING_DIR=${ROOT}/staging-${TRIPLE}
 LOCALES_STAGING_DIR=${ROOT}/staging-locales
 INSTALL_DIR=${STAGING_DIR}${PREFIX}
 
-rm -rf "${SRC_DIR}" "${BUILD_DIR}" "${NATIVE_BUILD_DIR}" "${HEADERS_DIR}" "${STAGING_DIR}" "${LOCALES_STAGING_DIR}"
-mkdir -p "${SRC_DIR}" "${HEADERS_DIR}" "${STAGING_DIR}" "${LOCALES_STAGING_DIR}"
+rm -rf "${SRC_DIR}" "${BUILD_DIR}" "${NATIVE_BUILD_DIR}" "${HEADERS_DIR}" "${NATIVE_HEADERS_DIR}" "${STAGING_DIR}" "${LOCALES_STAGING_DIR}"
+mkdir -p "${SRC_DIR}" "${STAGING_DIR}" "${LOCALES_STAGING_DIR}"
 
 # Verify the release signature against the glibc release managers' keys in glibc-keyring.gpg
 # (exported from https://ftp.gnu.org/gnu/gnu-keyring.gpg). A release signed by anyone else
@@ -83,14 +84,23 @@ curl -sSfL -o "${SOURCE_TARBALL}.sig" "https://ftp.gnu.org/gnu/glibc/glibc-${VER
 gpgv --keyring "${HERE}/glibc-keyring.gpg" "${SOURCE_TARBALL}.sig" "${SOURCE_TARBALL}"
 tar Jxf "${SOURCE_TARBALL}" --strip-components 1 -C "${SRC_DIR}"
 
-# Gather the kernel headers into one tree (linux/, asm/, asm-generic/, ...). On a native
-# multiarch system asm/ lives under /usr/include/<triple>/asm, so it's copied separately.
-dpkg -L "${KERNEL_HEADERS_PKG}" | grep -E "^${KERNEL_HEADERS_ROOT}/.+\.h$" | grep -v "^${KERNEL_HEADERS_ROOT}/${TRIPLE}/" \
-    | sed "s,^${KERNEL_HEADERS_ROOT}/,," \
-    | (cd "${KERNEL_HEADERS_ROOT}" && xargs cp --parents -t "${HEADERS_DIR}")
-if [[ ! -d "${HEADERS_DIR}/asm" ]]; then
-    cp -r "${KERNEL_ASM_DIR}" "${HEADERS_DIR}/asm"
-fi
+# gather_kernel_headers <package> <include root> <asm dir> <triple> <dest>
+# Gathers a package's kernel headers into one tree (linux/, asm/, asm-generic/, ...), as
+# glibc's --with-headers expects. On a native multiarch system asm/ lives under
+# /usr/include/<triple>/asm (/usr/include/asm only exists with gcc-multilib), so it's copied
+# separately.
+gather_kernel_headers() {
+    local pkg="$1" root="$2" asm_dir="$3" triple="$4" dest="$5"
+    mkdir -p "${dest}"
+    dpkg -L "${pkg}" | grep -E "^${root}/.+\.h$" | grep -v "^${root}/${triple}/" \
+        | sed "s,^${root}/,," \
+        | (cd "${root}" && xargs cp --parents -t "${dest}")
+    if [[ ! -d "${dest}/asm" ]]; then
+        cp -r "${asm_dir}" "${dest}/asm"
+    fi
+}
+
+gather_kernel_headers "${KERNEL_HEADERS_PKG}" "${KERNEL_HEADERS_ROOT}" "${KERNEL_ASM_DIR}" "${TRIPLE}" "${HEADERS_DIR}"
 
 # configure_and_make <triple> <cc> <cxx> <kernel headers> <build dir> <prefix>
 configure_and_make() {
@@ -132,7 +142,8 @@ make -C "${BUILD_DIR}" install DESTDIR="${STAGING_DIR}"
 # /usr/lib/locale won't do). A cross build therefore also builds glibc natively, which isn't
 # installed. Compiled locales only depend on the target's endianness.
 if [[ "${TRIPLE}" != "${BUILD_TRIPLE}" ]]; then
-    configure_and_make "${BUILD_TRIPLE}" gcc g++ /usr/include "${NATIVE_BUILD_DIR}" "${NATIVE_PREFIX}"
+    gather_kernel_headers linux-libc-dev /usr/include "/usr/include/${BUILD_TRIPLE}/asm" "${BUILD_TRIPLE}" "${NATIVE_HEADERS_DIR}"
+    configure_and_make "${BUILD_TRIPLE}" gcc g++ "${NATIVE_HEADERS_DIR}" "${NATIVE_BUILD_DIR}" "${NATIVE_PREFIX}"
 fi
 if echo | "${CC}" -dM -E - | grep -q '__BYTE_ORDER__ __ORDER_BIG_ENDIAN__'; then
     ENDIAN=--big-endian
@@ -162,6 +173,18 @@ done
 mkdir -p "${INSTALL_DIR}/lib/locale"
 cp -r "${LOCALES_STAGING_DIR}${NATIVE_PREFIX}/lib/locale/." "${INSTALL_DIR}/lib/locale/"
 du -sh "${INSTALL_DIR}/lib/locale"
+
+# The linker scripts (libc.so, libm.so, libm.a) name their libraries by absolute path, and ld
+# prepends the sysroot to those when the script is inside --sysroot, so a --sysroot=<prefix> link
+# can't find them. Bare names are looked up in the library search path (-L<prefix>/lib, or
+# <sysroot>/lib), which works with and without --sysroot. (Sysroot-relative /lib/... paths
+# would make a link without --sysroot pick up the host's libc.)
+LD_SCRIPTS=$(find "${INSTALL_DIR}/lib" -maxdepth 1 -type f -exec grep -lI 'GNU ld script' {} +)
+sed -i "s,${PREFIX}/lib/,,g" ${LD_SCRIPTS}
+if grep "${PREFIX}/lib/" ${LD_SCRIPTS}; then
+    echo "Linker scripts still contain absolute paths"
+    exit 1
+fi
 
 # The ld.so.cache from make install only lists the prefix's libs, which ld.so searches first anyway.
 rm -f "${INSTALL_DIR}/etc/ld.so.cache"
