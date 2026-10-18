@@ -66,7 +66,7 @@ included, build on the x64 runner, so the arm64 variant of the workflow isn't ne
   into `<prefix>/include`, so the include dir is self-contained.
 - The source tarball's GPG signature is checked against `glibc-keyring.gpg`, which holds the
   glibc release managers' keys exported from `https://ftp.gnu.org/gnu/gnu-keyring.gpg`
-  (Carlos O'Donell signed 2.28/2.30/2.32-2.40, Siddhesh Poyarekar 2.29/2.31, Andreas K. Huettel
+  (Andreas Schwab signed 2.17, Carlos O'Donell 2.28/2.30/2.32-2.40, Siddhesh Poyarekar 2.29/2.31, Andreas K. Huettel
   2.41/2.42). A release signed by someone else fails the build until their key is added.
 - build.sh picks the gcc per glibc version (`GCC_MAJOR`): Ubuntu's `gcc-9` for glibc < 2.28
   (2.17's configure only accepts gcc 4.3-9.x), `gcc-13` otherwise. Newer glibc needing a newer gcc
